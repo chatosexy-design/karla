@@ -55,24 +55,40 @@ const lsGet = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d;
 const lsSet = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 const number = (v, def=0) => isFinite(+v) ? +v : def;
 
-function initDB(){
+async function initDB(){
+  // Intentar cargar desde el servidor
+  try {
+    const logsRes = await fetch('/api/logs');
+    state.logs = await logsRes.json();
+
+    const profileRes = await fetch('/api/profile');
+    state.profile = await profileRes.json();
+  } catch (err) {
+    console.error('Error al cargar datos desde el servidor:', err);
+    state.logs = lsGet('nutriruta-logs', []);
+    state.profile = lsGet('nutriruta-profile', { calTarget: 2000 });
+  }
+
   state.foodsDB = lsGet('nutriruta-foods', BASE_FOODS.map(rowToFood));
-  // Evita duplicar al migrar
   if(Array.isArray(state.foodsDB) && state.foodsDB.length && typeof state.foodsDB[0][0] !== 'string'){
     // ya son objetos
   }else{
     state.foodsDB = BASE_FOODS.map(rowToFood);
   }
-  state.logs = lsGet('nutriruta-logs', []);
-  state.profile = lsGet('nutriruta-profile', { calTarget: 2000 });
+  
   state.activeDate = todayStr();
+  renderFoodsDatalist();
+  $('#calTarget').value = state.profile.calTarget;
+  $('#sumKcalTarget').textContent = state.profile.calTarget;
+  renderLogsForDate(state.activeDate);
 }
 
 function rowToFood(r){
   return { name:r[0], kcal:r[1], sugars:r[2], satfat:r[3], sodium:r[4], fiber:r[5], tags:r[6] };
 }
 
-function saveAll(){
+async function saveAll(){
+  // La persistencia ahora es mayormente vía API, pero mantenemos localStorage como fallback
   lsSet('nutriruta-foods', state.foodsDB);
   lsSet('nutriruta-logs', state.logs);
   lsSet('nutriruta-profile', state.profile);
@@ -99,7 +115,7 @@ function prefillMacrosByFoodName(name){
 
 function gramsFactor(grams){ return number(grams, 0) / 100; }
 
-function addLog(e){
+async function addLog(e){
   e.preventDefault();
   const date = $('#date').value || todayStr();
   const name = $('#food').value.trim();
@@ -112,7 +128,6 @@ function addLog(e){
   if(!name) return;
   const f = gramsFactor(grams);
   const item = {
-    id: crypto.randomUUID(),
     date,
     name,
     grams,
@@ -123,12 +138,23 @@ function addLog(e){
     fiber: +(fiber*f).toFixed(2),
     tags: detectTags(name),
   };
-  state.logs.push(item);
-  saveAll();
-  renderLogsForDate(state.activeDate || date);
-  $('#foodForm').reset();
-  $('#grams').value = 100;
-  $('#date').value = state.activeDate;
+
+  try {
+    const res = await fetch('/api/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item)
+    });
+    const savedLog = await res.json();
+    state.logs.push(savedLog);
+    saveAll();
+    renderLogsForDate(state.activeDate || date);
+    $('#foodForm').reset();
+    $('#grams').value = 100;
+    $('#date').value = state.activeDate;
+  } catch (err) {
+    console.error('Error al guardar log:', err);
+  }
 }
 
 function detectTags(name){
@@ -136,10 +162,15 @@ function detectTags(name){
   return f?.tags ?? [];
 }
 
-function deleteLog(id){
-  state.logs = state.logs.filter(x => x.id !== id);
-  saveAll();
-  renderLogsForDate(state.activeDate);
+async function deleteLog(id){
+  try {
+    await fetch(`/api/logs/${id}`, { method: 'DELETE' });
+    state.logs = state.logs.filter(x => x._id !== id);
+    saveAll();
+    renderLogsForDate(state.activeDate);
+  } catch (err) {
+    console.error('Error al borrar log:', err);
+  }
 }
 
 function renderLogsForDate(dateStr){
@@ -158,7 +189,7 @@ function renderLogsForDate(dateStr){
       <td>${r.satfat}</td>
       <td>${r.sodium}</td>
       <td>${r.fiber}</td>
-      <td><button class="btn" data-del="${r.id}">Quitar</button></td>
+      <td><button class="btn" data-del="${r._id}">Quitar</button></td>
     </tr>
   `).join('');
   tbody.querySelectorAll('[data-del]').forEach(btn=>{
@@ -356,10 +387,20 @@ function importData(file){
 }
 
 // Perfil
-function saveProfile(){
-  state.profile.calTarget = number($('#calTarget').value, 2000);
-  saveAll();
-  renderDailySummary(state.activeDate);
+async function saveProfile(){
+  const calTarget = number($('#calTarget').value, 2000);
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calTarget })
+    });
+    state.profile = await res.json();
+    saveAll();
+    renderDailySummary(state.activeDate);
+  } catch (err) {
+    console.error('Error al guardar perfil:', err);
+  }
 }
 
 // Eventos
